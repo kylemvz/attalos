@@ -15,17 +15,17 @@ class NegSamplingModel(AttalosModel):
     Create a tensorflow graph that does regression to a target using a negative sampling loss function
     """
     def __init__(self, w2v_model, train_dataset, test_dataset,
-                 learning_rate=1.001,
+                 learning_rate=0.01,
                  hidden_units=[200,200],
-                 optim_words=False,
+                 optim_words=True,
                  use_batch_norm=True, **kwargs):
         
         self.model_info = dict()
 
         input_size = train_dataset.img_feat_size
         self.cross_eval = kwargs.get("cross_eval", False)
-        self.one_hot = OneHot([train_dataset] if self.cross_eval else [train_dataset],                              
-                               valid_vocab=w2v_model.keys())
+        self.one_hot = OneHot([train_dataset] if self.cross_eval else [train_dataset])                              
+                               #valid_vocab=w2v_model.keys())
         w2v = initVo( w2v_model, self.one_hot.get_key_ordering() )
         self.w2v = w2v
         
@@ -70,10 +70,6 @@ class NegSamplingModel(AttalosModel):
 
         def meanlogsig(pred, truth):
             reduction_indicies = 2
-            logger.info(pred)
-            logger.info(truth)
-            print pred
-            print truth
             return tf.reduce_mean( tf.log( tf.sigmoid( tf.reduce_sum(pred*truth, reduction_indices=reduction_indicies))))
         
         pos_loss = meanlogsig(self.model_info['prediction'], self.model_info['pos_vecs'])
@@ -81,6 +77,8 @@ class NegSamplingModel(AttalosModel):
         loss = -(pos_loss + neg_loss)
         self.model_info['loss'] = loss 
 
+        logger.info("Learning rate: %s" % learning_rate)
+        
         # Initialization operations: check to see which ones actually get initialized (make sure "W2V")
         self.model_info['optimizer'] = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
         self.model_info['init_op'] = tf.initialize_all_variables()
@@ -112,8 +110,8 @@ class NegSamplingModel(AttalosModel):
 
         # If you are, then you'll need to get the vectors offline
         else:
-            pos_ids = y[0]
-            neg_ids = y[1]
+            pos_ids, neg_ids = y
+            
             pvecs = np.zeros((pos_ids.shape[0], pos_ids.shape[1], self.w2v.shape[1]))
             nvecs = np.zeros((neg_ids.shape[0], neg_ids.shape[1], self.w2v.shape[1]))
             for i, ids in enumerate(pos_ids):
@@ -128,12 +126,11 @@ class NegSamplingModel(AttalosModel):
                                                    self.model_info['neg_vecs']: nvecs
                                                  })
             self.updatewords(pos_ids, neg_ids, preds)
-            
+            #logger.info("Loss: %s" % loss)
         return loss
     
     
     def get_batch(self, pBatch, numSamps=[5,10]):
-        
         nBatch = 1.0 - pBatch
         vpia = []; vnia = [];
         for i,unisamp in enumerate(pBatch):
@@ -142,6 +139,8 @@ class NegSamplingModel(AttalosModel):
         for i,unisamp in enumerate(nBatch):
             vni = np.random.choice( range(len(unisamp)) , size=numSamps[1], p=1.0*unisamp/sum(unisamp))
             vnia += [vni]
+        vpia = np.array(vpia)
+        vnia = np.array(vnia)
         return vpia, vnia
     
     def to_batches(self, dataset, batch_size = 1024):
@@ -149,20 +148,23 @@ class NegSamplingModel(AttalosModel):
         for batch in xrange(num_batches):
             img_feats_list, text_feats_list = dataset.get_next_batch(batch_size)
             img_feats = np.array(img_feats_list)
+            #img_feats = (img_feats.T / np.linalg.norm(img_feats, axis=1)).T
+            
             new_text_feats = [self.one_hot.get_multiple(text_feats) for text_feats in text_feats_list]
             new_text_feats = np.array(new_text_feats)
-            pos_ids, neg_ids = self.get_batch( new_text_feats )
+            new_text_feats = (new_text_feats.T / np.linalg.norm(new_text_feats, axis=1)).T
             
+            pos_ids, neg_ids = self.get_batch( new_text_feats )
             yield img_feats, (pos_ids, neg_ids)
    
     def to_ndarrs(self, dataset):
-        x = []                                                                                                                   
-        y = []                                                                                                                   
-        for idx in dataset:                                                                                                       
-            image_feats, text_feats = dataset.get_index(idx)                                                                     
-            text_feats = self.one_hot.get_multiple(text_feats)                                                                   
-            x.append(image_feats)                                                                                                 
-            y.append(text_feats)                                                                                                  
+        x = []                                                                                                                  
+        y = []                                                                                                                  
+        for idx in dataset:                                                                                                      
+            image_feats, text_feats = dataset.get_index(idx)                                                                    
+            text_feats = self.one_hot.get_multiple(text_feats)                                                                  
+            x.append(image_feats)                                                                                                
+            y.append(text_feats)                                                                                                
         return np.asarray(x), np.asarray(y)  
 
     def save(self, sess, model_output_path):
