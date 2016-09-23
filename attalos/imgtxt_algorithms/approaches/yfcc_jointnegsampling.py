@@ -7,7 +7,7 @@ from itertools import izip
 
 from attalos.imgtxt_algorithms.approaches.base import AttalosModel
 from attalos.util.transformers.onehot import OneHot
-from attalos.imgtxt_algorithms.correlation.correlation import construct_W
+from attalos.imgtxt_algorithms.correlation.correlation import construct_W, scale3
 from attalos.imgtxt_algorithms.util.negsamp import NegativeSampler
 
 from collections import Counter
@@ -19,26 +19,13 @@ logger = l.getLogger(__name__)
 class YFCCJointNegSamplingModel(AttalosModel):
     def _construct_model_info(self, input_size, output_size, learning_rate, wv_arr,
                               hidden_units=[200,200],
-                              optim_words=True,
                               use_batch_norm=True):
         model_info = {}
         model_info["input"] = tf.placeholder(shape=(None, input_size), dtype=tf.float32)
 
-        if optim_words:
-            model_info["pos_vecs"] = tf.placeholder(dtype=tf.float32)
-            model_info["neg_vecs"] = tf.placeholder(dtype=tf.float32)
-            logger.info("Optimization on GPU, word vectors are stored separately.")
-        else:
-            model_info["w2v"] = tf.Variable(wv_arr, dtype=tf.float32)
-            model_info["pos_ids"] = tf.placeholder(dtype=tf.int32)
-            model_info["neg_ids"] = tf.placeholder(dtype=tf.int32)
-            model_info["pos_vecs"] = tf.transpose(tf.nn.embedding_lookup(model_info["w2v"],
-                                                                         model_info["pos_ids"]),
-                                                       perm=[1,0,2])
-            model_info["neg_vecs"] = tf.transpose(tf.nn.embedding_lookup(model_info["w2v"],
-                                                                         model_info["neg_ids"]),
-                                                       perm=[1,0,2])
-            logger.info("Not optimizing word vectors.")
+        model_info["pos_vecs"] = tf.placeholder(dtype=tf.float32)
+        model_info["neg_vecs"] = tf.placeholder(dtype=tf.float32)
+        logger.info("Optimization on GPU, word vectors are stored separately.")
 
         # Construct fully connected layers
         layers = []
@@ -71,7 +58,6 @@ class YFCCJointNegSamplingModel(AttalosModel):
 
         return model_info
     
-    
     def _run_counter(self, datasets):
         word_counter = Counter()
         valid_vocab = set(self.wv_model.vocab)
@@ -83,7 +69,7 @@ class YFCCJointNegSamplingModel(AttalosModel):
                     if tag in valid_vocab:
                         word_counter[tag] += 1
         tag_ordering = [word for word, count in word_counter.most_common()]
-        tag_to_index = {tag: i-1 for i, tag in enumerate(tag_ordering)}
+        tag_to_index = {tag: i for i, tag in enumerate(tag_ordering)}
         return word_counter, tag_ordering, tag_to_index
        
     def __init__(self, wv_model, datasets, **kwargs):
@@ -98,7 +84,6 @@ class YFCCJointNegSamplingModel(AttalosModel):
         
         train_dataset = datasets[0] # train_dataset should always be first in datasets
         self.learning_rate = kwargs.get("learning_rate", 0.0001)
-        self.optim_words = kwargs.get("optim_words", True)
         self.hidden_units = kwargs.get("hidden_units", "200,200")
         self.hidden_units = [int(x) for x in self.hidden_units.split(",")]
         logger.info("Constructing model info.")
@@ -127,30 +112,38 @@ class YFCCJointNegSamplingModel(AttalosModel):
             if text_feats_idxs: # if empty, do nothing
                 # Uniformly sample positive tags
                 pos_ids = np.random.choice(text_feats_idxs, size=num_pos_samples)
+                #logger.info("Positive id choice(s): %s" % pos_ids)
                 pos_idarr[row_idx] = pos_ids
                 for idx, pos_id in enumerate(pos_ids):
                     wv = self.w[pos_id]
+                    #logger.info("WV: %s" % str(wv))
                     pos_vecs[row_idx, idx] = wv
             # Sample negative tags according to the word counts
             # TODO: negsampler.negsamp_ind calls np.copy, creating a copy of the count pdf... may be able to optimize?
-            p = np.ones(vocab_size)
-            p[text_feats_idxs] = 0
-            p = p / p.sum()
-            neg_ids = np.random.choice(vocab_size, num_neg_samples, p=p)
-            #neg_ids = self.negsampler.negsamp_ind(text_feats_idxs, num_neg_samples)
+            #p = np.ones(vocab_size)
+            #p[text_feats_idxs] = 0
+            #p = p / p.sum()
+            #neg_ids = np.random.choice(vocab_size, num_neg_samples, p=p)
+            neg_ids = self.negsampler.negsamp_ind(text_feats_idxs, num_neg_samples)
+            #logger.info("Negative id choice(s): %s" % neg_ids)
             neg_idarr[row_idx] = neg_ids
             for idx, neg_id in enumerate(neg_ids):
                 wv = self.w[neg_id]
+                #logger.info("WV: %s" % str(wv))
                 neg_vecs[row_idx, idx] = wv
         self.pos_ids = pos_idarr
         self.neg_ids = neg_idarr
         pos_vecs = pos_vecs.transpose((1, 0, 2))
         neg_vecs = neg_vecs.transpose((1, 0, 2))
+        self.pos_vecs = pos_vecs
+        self.neg_vecs = neg_vecs
         return pos_vecs, neg_vecs
         
     def prep_fit(self, data):
         image_feats, text_feats = data
-        image_feats = np.array(image_feats)  # TODO: image feats already numpy array?
+        image_feats = np.array(image_feats)  # TODO: is this necessary? is image feats already a numpy array?
+        image_feats = scale3(image_feats)
+        
         text_feats_idxs_list = [[self.tag_to_index[tag] for tag in tags if tag in self.tag_to_index] for tags in text_feats]
         pos_vecs, neg_vecs = self._get_sampled_vecs(text_feats_idxs_list)
         fetches = [self.model_info["optimizer"], self.model_info["loss"], self.model_info["prediction"]]
@@ -179,8 +172,9 @@ class YFCCJointNegSamplingModel(AttalosModel):
         num_batches = int(dataset.num_images / batch_size)
         for count in xrange(num_batches):
             selected_idxs = np.random.randint(low=dataset.num_images, size=batch_size)
-            selected_filenames = dataset.image_ids[sorted(selected_idxs.tolist())]
-            batch_image_feats = dataset.image_feats[selected_idxs]
+            sorted_selected_idxs = sorted(selected_idxs.tolist())
+            selected_filenames = dataset.image_ids[sorted_selected_idxs]
+            batch_image_feats = dataset.image_feats[sorted_selected_idxs]
             batch_text_feats = [dataset.text_feats[selected_filename] for selected_filename in selected_filenames]
             #batch_text_feats = dataset.text_feats[selected_filenames]
             fetches, feed_dict = self.prep_fit((batch_image_feats, batch_text_feats))
@@ -203,6 +197,7 @@ class YFCCJointNegSamplingModel(AttalosModel):
             x = np.array(dataset.image_feats)
         else:
             x = dataset.image_feats
+        x = scale3(x)
             
         logger.info("Allocating space for text feature matrix.")
         y = lil_matrix((dataset.num_images, len(self.test_tag_ordering)))
@@ -227,7 +222,7 @@ class YFCCJointNegSamplingModel(AttalosModel):
         feed_dict = {
             self.model_info["input"]: x
         }
-        truth = y
+        truth = y.tocsr()
         return fetches, feed_dict, truth
     
     def post_predict(self, predict_fetches, cross_eval=False):
