@@ -16,6 +16,7 @@ from attalos.imgtxt_algorithms.approaches.naivesum import NaiveSumModel
 from attalos.imgtxt_algorithms.approaches.wdv import WDVModel
 from attalos.imgtxt_algorithms.approaches.negsampling import NegSamplingModel
 from attalos.imgtxt_algorithms.approaches.fast0tag import FastZeroTagModel
+from attalos.imgtxt_algorithms.approaches.yfcc_jointnegsampling import YFCCJointNegSamplingModel
 
 
 logger = l.getLogger(__name__)
@@ -30,6 +31,7 @@ class ModelTypes(Enum):
     wdv = WDVModel
     negsampling = NegSamplingModel
     fast0tag = FastZeroTagModel
+    yfccjoint = YFCCJointNegSamplingModel
 
 def train_batch(sess, model, batch_data):
     """

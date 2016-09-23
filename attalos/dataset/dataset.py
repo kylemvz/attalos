@@ -3,10 +3,16 @@ from __future__ import division
 from __future__ import print_function
 
 import json
+#import ujson
+import time
 import gzip
 
 import numpy as np
 import h5py
+
+import attalos.util.log.log as l
+
+logger = l.getLogger(__name__)
 
 
 class Dataset(object):
@@ -33,25 +39,38 @@ class Dataset(object):
                                       .format(text_feat_type, ','.join(self.TEXT_FEAT_TYPES_AVAILABLE)))
 
         self.tag_transformer = tag_transfomer
+        logger.info("Loading image features...")
         self.__load_image_features(load_image_feats_in_mem)
+        logger.info("Loading text features...")
         self.__load_text_features()
 
     def __load_image_features(self, load_image_feats_in_mem):
+        logger.info("Reading h5py file.")
+        t1 = time.time()
         self.img_feature_file = h5py.File(self.img_feature_filename)
+        logger.info("Loading image feats.")
         if load_image_feats_in_mem:
             self.image_feats = np.array(self.img_feature_file['feats'])
         else:
             self.image_feats = self.img_feature_file['feats']
-        self.image_ids = self.img_feature_file['ids']
+        t2 = time.time()
+        logger.info("Elapsed time: %s" % str(t2-t1))
+        self.image_ids = np.array(self.img_feature_file['ids'])
+        logger.info("Getting length of first feature vector.")
         self.img_feat_size = len(self.image_feats[0,:]) # get length of the first feature vector
         self._num_images = len(self.image_ids)
+        logger.info("Num images: %s" % self._num_images)
 
     def __load_text_features(self):
         if self.text_feature_filename.endswith('.gz'):
             input_file = gzip.open(self.text_feature_filename)
         else:
             input_file = open(self.text_feature_filename)
+        logger.info("Loading json from file (timing).")
+        t1 = time.time()
         self.text_feats = json.load(input_file)[self.text_feat_type]
+        t2 = time.time()
+        logger.info("Time elapsed: %s" % str(t2-t1))
 
     def get_index(self, item_index):
         # Transform image index to image_id
